@@ -120,6 +120,7 @@ int main(int argc, char **argv) {
   }
 
   // Read and parse menu options
+  // TODO Add command line option for file name
   rc = file_read("options.pnr", &options_raw, &options_raw_size);
   if (rc != RC_OK)
     goto _err;
@@ -130,7 +131,7 @@ int main(int argc, char **argv) {
 
   rc = curses_init(curses_flags);
   if (rc != RC_OK)
-    return rc;
+    goto _err;
 
   menu_current = menu_root;
 
@@ -306,6 +307,7 @@ int curses_init(int flags) {
     return RC_ERR_CURSES_CURS_SET;
 
   // Init colors, if available
+  // TODO Add command line option to disable colors
   g_curses_colors = has_colors() == TRUE;
   if (g_curses_colors) {
     if (start_color() != OK)
@@ -336,6 +338,7 @@ int curses_end() {
   return RC_OK;
 }
 
+// TODO Handle errno
 int file_read(const char *path, char **ret_content, size_t *ret_size) {
   int rc = RC_OK;
   char *content = NULL;
@@ -344,7 +347,7 @@ int file_read(const char *path, char **ret_content, size_t *ret_size) {
   fd = fopen(path, "r");
   if (fd == NULL) {
     rc = RC_ERR_FILE_READ_FOPEN;
-    goto _done;
+    goto _err;
   }
 
   fseek(fd, 0, SEEK_END);
@@ -353,13 +356,13 @@ int file_read(const char *path, char **ret_content, size_t *ret_size) {
   content = malloc(size + 1);
   if (content == NULL) {
     rc = RC_ERR_OOM;
-    goto _done;
+    goto _err;
   }
 
   fseek(fd, 0, SEEK_SET);
   if (fread(content, 1, size, fd) != size) {
     rc = RC_ERR_FILE_READ_FREAD;
-    goto _done;
+    goto _err;
   }
 
   content[size] = '\0';
@@ -367,6 +370,11 @@ int file_read(const char *path, char **ret_content, size_t *ret_size) {
   *ret_content = content;
   *ret_size = size;
   rc = RC_OK;
+  goto _done;
+
+_err:
+  if (content != NULL)
+    free(content);
 
 _done:
   if (fd != NULL)
