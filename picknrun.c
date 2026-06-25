@@ -52,8 +52,6 @@
 int g_curses_colors = 0;
 int g_curses_w = 0;
 int g_curses_h = 0;
-const char *g_options[] = {"1", "2"};
-int g_options_length = 2;
 
 // Data types
 struct slice {
@@ -62,8 +60,11 @@ struct slice {
 };
 
 struct pnr_menu {
+  struct pnr_menu *parent;
+  struct slice name;
   struct pnr_option *options;
   int options_size;
+  int options_selected;
 };
 
 struct pnr_option {
@@ -100,8 +101,10 @@ int main(int argc, char **argv) {
   int selected_option = 0;
   int input = 0;
   char *options_raw = NULL;
+  char *title = NULL;
   size_t options_raw_size = 0;
-  struct pnr_menu *menu = NULL;
+  struct pnr_menu *menu_root = NULL;
+  struct pnr_menu *menu_current = NULL;
 
   // Curses depends on locale
   if (setlocale(LC_ALL, "") == NULL) {
@@ -121,29 +124,65 @@ int main(int argc, char **argv) {
   if (rc != RC_OK)
     goto _err;
 
-  rc = pnr_parse(0, options_raw, options_raw_size, &menu);
+  rc = pnr_parse(0, options_raw, options_raw_size, &menu_root);
   if (rc != RC_OK)
     goto _err;
-
-  // FIXME Remove debug: Show parsed options
-  pnr_print(0, menu);
-  goto _done;
 
   rc = curses_init(curses_flags);
   if (rc != RC_OK)
     return rc;
 
+  menu_current = menu_root;
+
   // Main loop
   while (input != 'q') {
     if (clear() != OK) {
       rc = RC_ERR_CURSES_CLEAR;
-      goto _done;
+      goto _err;
     }
 
-    // TODO Remove g_options and use the parsed file
-    for (int i = 0; i < g_options_length; i++) {
+    // Breadcrumb
+    if (title != NULL)
+      free(title);
+    title = NULL;
+    int title_size = 0;
+    struct pnr_menu *parent = menu_current;
+    while (parent != NULL) {
+      struct slice *name = &parent->name;
+      if (name->start != NULL && name->size != 0) {
+        if (title_size > 0)
+          title_size += 3;
+        char *title_new = malloc(name->size + title_size + 1);
+        if (title_new == NULL) {
+          rc = RC_ERR_OOM;
+          goto _err;
+        }
+        strncpy(title_new, name->start, name->size);
+        if (title_size > 0) {
+          strcpy(&title_new[name->size], " > ");
+          strcpy(&title_new[name->size + 3], title);
+        }
+        title_size += name->size;
+        title_new[title_size] = '\0';
+        if (title != NULL)
+          free(title);
+        title = title_new;
+      }
+      parent = parent->parent;
+    }
+    if (title != NULL) {
+      if (mvprintw(0, 0, "%s", title) != OK) {
+        rc = RC_ERR_CURSES_MVPRINTW;
+        goto _done;
+      }
+    }
+
+    // Options
+    int options_offset_y = 2;
+    for (int i = 0; i < menu_current->options_size; i++) {
+      struct pnr_option *option = &menu_current->options[i];
       if (selected_option == i) {
-        if (mvprintw(i, 0, ">") != OK) {
+        if (mvprintw(i + options_offset_y, 0, ">") != OK) {
           rc = RC_ERR_CURSES_MVPRINTW;
           goto _done;
         }
@@ -153,7 +192,8 @@ int main(int argc, char **argv) {
             goto _done;
           }
       }
-      if (mvprintw(i, 2, "%s", g_options[i]) != OK) {
+      if (mvprintw(i + options_offset_y, 2, "%.*s", option->name.size,
+                   option->name.start) != OK) {
         rc = RC_ERR_CURSES_MVPRINTW;
         goto _done;
       }
@@ -165,7 +205,9 @@ int main(int argc, char **argv) {
           }
     }
 
-    if (mvprintw(g_options_length + 1, 0, "Press 'q' to quit\n") != OK) {
+    // Footer
+    if (mvprintw(menu_current->options_size + 1 + options_offset_y, 0,
+                 "Press 'q' to quit\n") != OK) {
       rc = RC_ERR_CURSES_MVPRINTW;
       goto _done;
     }
@@ -175,25 +217,44 @@ int main(int argc, char **argv) {
       goto _done;
     }
 
+    // Input
     // TODO Add config for key binds
     input = getch();
     switch (input) {
     case 'j':
     case KEY_DOWN:
       selected_option += 1;
-      if (selected_option >= g_options_length)
+      if (selected_option >= menu_current->options_size)
         selected_option = 0;
+      menu_current->options_selected = selected_option;
       break;
 
     case 'k':
     case KEY_UP:
       selected_option -= 1;
       if (selected_option < 0)
-        selected_option = g_options_length - 1;
+        selected_option = menu_current->options_size - 1;
+      menu_current->options_selected = selected_option;
+      break;
+
+    case 'h':
+    case KEY_LEFT:
+      if (menu_current->parent != NULL) {
+        menu_current = menu_current->parent;
+        selected_option = menu_current->options_selected;
+      }
       break;
 
     case '\n':
-      // TODO Run the selected option
+    case 'l':
+    case KEY_RIGHT:
+      if (menu_current->options[selected_option].type == PNR_OPTION_TYPE_MENU) {
+        menu_current = menu_current->options[selected_option].menu;
+        selected_option = menu_current->options_selected;
+      } else if (menu_current->options[selected_option].type ==
+                 PNR_OPTION_TYPE_ACTION)
+        // TODO Run the selected option
+        ;
       break;
 
     case KEY_RESIZE:
@@ -206,8 +267,11 @@ int main(int argc, char **argv) {
 
 _err:
 _done:
-  if (menu != NULL)
-    pnr_free(menu);
+  if (title != NULL)
+    free(title);
+
+  if (menu_root != NULL)
+    pnr_free(menu_root);
 
   if (options_raw != NULL)
     free(options_raw);
@@ -322,6 +386,12 @@ int pnr_parse(int depth, const char *buffer, size_t size,
     rc = RC_ERR_OOM;
     goto _err;
   }
+  menu->parent = NULL;
+  menu->name.start = NULL;
+  menu->name.size = 0;
+  menu->options = NULL;
+  menu->options_size = 0;
+  menu->options_selected = 0;
 
   // Count how many options we have
   int options_size = 0;
@@ -410,6 +480,9 @@ int pnr_parse(int depth, const char *buffer, size_t size,
                        &menu->options[option_index].menu);
         if (rc != RC_OK)
           goto _err;
+        menu->options[option_index].menu->parent = menu;
+        menu->options[option_index].menu->name =
+            menu->options[option_index].name;
       }
       option_index++;
     }
