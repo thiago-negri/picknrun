@@ -40,6 +40,7 @@
 #define RC_ERR_FILE_READ_FOPEN 16
 #define RC_ERR_OOM 17
 #define RC_ERR_FILE_READ_FREAD 18
+#define RC_ERR_USAGE 19
 
 #define CURSES_PAIR_HIGHLIGHT 1
 
@@ -81,6 +82,7 @@ struct pnr_action {
 };
 
 // Signatures
+void usage(char *bin_name);
 int curses_init(int options);
 int curses_end();
 int file_read(const char *path, char **ret_content, size_t *ret_size);
@@ -90,11 +92,31 @@ void pnr_print(int depth, struct pnr_menu *menu);
 void pnr_free(struct pnr_menu *menu);
 int slice_is_blank(const char *start, const char *end);
 int char_is_blank(char c);
+char *slice_to_str_alloc(struct slice slice);
 const char *ltrim(const char *s);
 const char *rtrim(const char *s);
 int main(int argc, char **argv);
 
 // Implementation
+void usage(char *bin_name) {
+  printf("Usage:\n");
+  printf("\n");
+  printf("  %s [--help|-h] [--file|-f <options.pnr>] [--white|-w]\n", bin_name);
+  printf("\n");
+  printf("Options:\n");
+  printf("\n");
+  printf("  --help, -h\n");
+  printf("    Display this message.\n");
+  printf("\n");
+  printf("  --file, -f\n");
+  printf("    Set the file with options to load.\n");
+  printf("    Defaults to \"options.pnr\".\n");
+  printf("\n");
+  printf("  --white, -w\n");
+  printf("    Signal this is running on a terminal with a light background,\n");
+  printf("    highlight colors will be inverted.\n");
+}
+
 int main(int argc, char **argv) {
   int rc = 0;
   int curses_flags = 0;
@@ -105,6 +127,7 @@ int main(int argc, char **argv) {
   size_t options_raw_size = 0;
   struct pnr_menu *menu_root = NULL;
   struct pnr_menu *menu_current = NULL;
+  char *options_file = "options.pnr";
 
   // Curses depends on locale
   if (setlocale(LC_ALL, "") == NULL) {
@@ -114,14 +137,25 @@ int main(int argc, char **argv) {
 
   // Parse command line options
   for (int i = 0; i < argc; i++) {
-    if (strcmp(argv[i], "--white") == 0 || strcmp(argv[i], "-w") == 0) {
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      usage(argv[0]);
+      rc = RC_OK;
+      goto _done;
+    } else if (strcmp(argv[i], "--white") == 0 || strcmp(argv[i], "-w") == 0) {
       curses_flags = curses_flags | FLAG_CURSES_INIT_WHITE_TERMINAL;
+    } else if (strcmp(argv[i], "--file") == 0 || strcmp(argv[i], "-f") == 0) {
+      i++;
+      if (i >= argc) {
+        usage(argv[0]);
+        rc = RC_ERR_USAGE;
+        goto _err;
+      }
+      options_file = argv[i];
     }
   }
 
   // Read and parse menu options
-  // TODO Add command line option for file name
-  rc = file_read("options.pnr", &options_raw, &options_raw_size);
+  rc = file_read(options_file, &options_raw, &options_raw_size);
   if (rc != RC_OK)
     goto _err;
 
@@ -253,9 +287,20 @@ int main(int argc, char **argv) {
         menu_current = menu_current->options[selected_option].menu;
         selected_option = menu_current->options_selected;
       } else if (menu_current->options[selected_option].type ==
-                 PNR_OPTION_TYPE_ACTION)
-        // TODO Run the selected option
-        ;
+                 PNR_OPTION_TYPE_ACTION) {
+        char *command = slice_to_str_alloc(
+            menu_current->options[selected_option].action->command);
+        if (command == NULL) {
+          rc = RC_ERR_OOM;
+          goto _err;
+        }
+        mvprintw(selected_option + options_offset_y,
+                 menu_current->options[selected_option].name.size + 4,
+                 " ... running ...");
+        refresh();
+        system(command);
+        free(command);
+      }
       break;
 
     case KEY_RESIZE:
@@ -557,6 +602,16 @@ int char_is_blank(char c) {
   default:
     return 0;
   }
+}
+
+char *slice_to_str_alloc(struct slice slice) {
+  char *str = malloc(slice.size + 1);
+  if (str == NULL) {
+    return NULL;
+  }
+  strncpy(str, slice.start, slice.size);
+  str[slice.size] = '\0';
+  return str;
 }
 
 const char *ltrim(const char *s) {

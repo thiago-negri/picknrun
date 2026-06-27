@@ -1,12 +1,19 @@
 WiFi
-- On              $ nmcli d up wlp0s20f3
-- Off             $ nmcli d down wlp0s20f3
+- On                    $ nmcli d up wlp0s20f3
+- Off                   $ nmcli d down wlp0s20f3
 
 Keyboard Layout
-- US              $ xkb-switch -s 'us'
-- US (intl)       $ xkb-switch -s 'us(intl)'
+- US                    $ xkb-switch -s 'us'
+- US (intl)             $ xkb-switch -s 'us(intl)'
 
 Volume
-- Up              $ wpctl set-volume @DEFAULT_SINK@ 3%- -l 1.0
-- Down            $ wpctl set-volume @DEFAULT_SINK@ 3%+ -l 1.0
-- Toggle Mute     $ wpctl set-mute @DEFAULT_SINK@ toggle
+- Controls              $ pavucontrol &
+- Up                    $ wpctl set-volume @DEFAULT_SINK@ 3%+ -l 1.0
+- Down                  $ wpctl set-volume @DEFAULT_SINK@ 3%- -l 1.0
+- Toggle Mute           $ wpctl set-mute @DEFAULT_SINK@ toggle
+
+Utils
+- Input-Leap            $ input-leap &
+- WhatsApp Web          $ ~/projects/utils/whatsappweb.sh &
+- Camera                $ ~/projects/utils/camera.sh &
+- Kill Herbstluftwm     $ ~/projects/utils/kill_herbstluftwm.sh &
