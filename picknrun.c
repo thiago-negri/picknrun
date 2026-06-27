@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
     if (title != NULL) {
       if (mvprintw(0, 0, "%s", title) != OK) {
         rc = RC_ERR_CURSES_MVPRINTW;
-        goto _done;
+        goto _err;
       }
     }
 
@@ -219,24 +219,24 @@ int main(int argc, char **argv) {
       if (selected_option == i) {
         if (mvprintw(i + options_offset_y, 0, ">") != OK) {
           rc = RC_ERR_CURSES_MVPRINTW;
-          goto _done;
+          goto _err;
         }
         if (g_curses_colors)
           if (attron(COLOR_PAIR(CURSES_PAIR_HIGHLIGHT)) != OK) {
             rc = RC_ERR_CURSES_ATTRON;
-            goto _done;
+            goto _err;
           }
       }
       if (mvprintw(i + options_offset_y, 2, "%.*s", option->name.size,
                    option->name.start) != OK) {
         rc = RC_ERR_CURSES_MVPRINTW;
-        goto _done;
+        goto _err;
       }
       if (selected_option == i)
         if (g_curses_colors)
           if (attroff(COLOR_PAIR(CURSES_PAIR_HIGHLIGHT)) != OK) {
             rc = RC_ERR_CURSES_ATTROFF;
-            goto _done;
+            goto _err;
           }
     }
 
@@ -244,12 +244,12 @@ int main(int argc, char **argv) {
     if (mvprintw(menu_current->options_size + 1 + options_offset_y, 0,
                  "Press 'q' to quit\n") != OK) {
       rc = RC_ERR_CURSES_MVPRINTW;
-      goto _done;
+      goto _err;
     }
 
     if (refresh() != OK) {
       rc = RC_ERR_CURSES_REFRESH;
-      goto _done;
+      goto _err;
     }
 
     // Input
