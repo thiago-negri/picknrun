@@ -1,0 +1,3 @@
+-Wall
+-Wpedantic
+-Wextra

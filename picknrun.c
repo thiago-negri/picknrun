@@ -41,15 +41,18 @@
 #define RC_ERR_OOM 17
 #define RC_ERR_FILE_READ_FREAD 18
 #define RC_ERR_USAGE 19
+#define RC_ERR_PARSE_ERROR_EMPTY_COMMAND 20
+#define RC_ERR_PARSE_ERROR_EMPTY_MENU 21
 
 #define CURSES_PAIR_HIGHLIGHT 1
 
-#define FLAG_CURSES_INIT_WHITE_TERMINAL (1 >> 0)
+#define FLAG_CURSES_INIT_WHITE_TERMINAL (1 << 0)
 
 #define PNR_OPTION_TYPE_MENU 1
 #define PNR_OPTION_TYPE_ACTION 2
 
 // Globals
+int g_curses_initialized = 0;
 int g_curses_colors = 0;
 int g_curses_w = 0;
 int g_curses_h = 0;
@@ -68,13 +71,15 @@ struct pnr_menu {
   int options_selected;
 };
 
+union pnr_option_type {
+  struct pnr_menu *menu;
+  struct pnr_action *action;
+};
+
 struct pnr_option {
   struct slice name;
   int type;
-  union {
-    struct pnr_menu *menu;
-    struct pnr_action *action;
-  };
+  union pnr_option_type t;
 };
 
 struct pnr_action {
@@ -84,7 +89,7 @@ struct pnr_action {
 // Signatures
 void usage(char *bin_name);
 int curses_init(int options);
-int curses_end();
+int curses_end(void);
 int file_read(const char *path, char **ret_content, size_t *ret_size);
 int pnr_parse(int depth, const char *buffer, size_t size,
               struct pnr_menu **ret_menu);
@@ -93,8 +98,8 @@ void pnr_free(struct pnr_menu *menu);
 int slice_is_blank(const char *start, const char *end);
 int char_is_blank(char c);
 char *slice_to_str_alloc(struct slice slice);
-const char *ltrim(const char *s);
-const char *rtrim(const char *s);
+const char *ltrim(const char *s, const char *end);
+const char *rtrim(const char *s, const char *start);
 int main(int argc, char **argv);
 
 // Implementation
@@ -284,12 +289,12 @@ int main(int argc, char **argv) {
     case 'l':
     case KEY_RIGHT:
       if (menu_current->options[selected_option].type == PNR_OPTION_TYPE_MENU) {
-        menu_current = menu_current->options[selected_option].menu;
+        menu_current = menu_current->options[selected_option].t.menu;
         selected_option = menu_current->options_selected;
       } else if (menu_current->options[selected_option].type ==
                  PNR_OPTION_TYPE_ACTION) {
         char *command = slice_to_str_alloc(
-            menu_current->options[selected_option].action->command);
+            menu_current->options[selected_option].t.action->command);
         if (command == NULL) {
           rc = RC_ERR_OOM;
           goto _err;
@@ -334,6 +339,7 @@ int curses_init(int flags) {
   // Init window and screen
   if (initscr() == 0)
     return RC_ERR_CURSES_INITSCR;
+  g_curses_initialized = 1;
 
   // Disable line buffering
   if (cbreak() != OK)
@@ -375,9 +381,9 @@ int curses_init(int flags) {
   return RC_OK;
 }
 
-int curses_end() {
+int curses_end(void) {
   // End window and screen
-  if (endwin() != OK)
+  if (g_curses_initialized && endwin() != OK)
     return RC_ERR_CURSES_ENDWIN;
 
   return RC_OK;
@@ -396,9 +402,10 @@ int file_read(const char *path, char **ret_content, size_t *ret_size) {
   }
 
   fseek(fd, 0, SEEK_END);
-  long size = ftell(fd);
+  size_t size = ftell(fd);
 
-  content = malloc(size + 1);
+  // 1 for '\n', 1 for '\0'
+  content = malloc(size + 2);
   if (content == NULL) {
     rc = RC_ERR_OOM;
     goto _err;
@@ -410,10 +417,12 @@ int file_read(const char *path, char **ret_content, size_t *ret_size) {
     goto _err;
   }
 
-  content[size] = '\0';
+  // Just because it's easier to assume the file always ends with a new line
+  content[size] = '\n';
+  content[size + 1] = '\0';
 
   *ret_content = content;
-  *ret_size = size;
+  *ret_size = size + 1; // +1 to include the appended '\n'
   rc = RC_OK;
   goto _done;
 
@@ -453,7 +462,7 @@ int pnr_parse(int depth, const char *buffer, size_t size,
     int skip = 0;
     for (int i = 0; i < depth; i++) {
       // We're ascending a depth level, ignore the rest of the buffer
-      if (strncmp(current, "- ", 2) != 0) {
+      if ((end - current) < 2 || strncmp(current, "- ", 2) != 0) {
         skip = 1;
         current = end;
         break;
@@ -463,25 +472,38 @@ int pnr_parse(int depth, const char *buffer, size_t size,
     if (current == end)
       break;
     // This line descends a depth, ignore it
-    if (strncmp(current, "- ", 2) == 0) {
+    if ((end - current) >= 2 && strncmp(current, "- ", 2) == 0) {
       skip = 1;
     }
     const char *start = current;
-    while (*current != '\n' && current != end)
+    while (current != end && *current != '\n')
       current++;
-    skip = skip || slice_is_blank(start, current); // Skip blank lines
+    // Skip blank lines
+    skip = skip || current == end || slice_is_blank(start, current);
     if (!skip)
       options_size++;
     if (*current == '\n')
       current++;
   }
 
+  if (options_size < 1) {
+    rc = RC_ERR_PARSE_ERROR_EMPTY_MENU;
+    goto _err;
+  }
+
   // Malloc and assign options
-  menu->options_size = options_size;
   menu->options = malloc(sizeof(struct pnr_option) * options_size);
   if (menu->options == NULL) {
     rc = RC_ERR_OOM;
     goto _err;
+  }
+  menu->options_size = options_size;
+  for (int i = 0; i < options_size; i++) {
+    menu->options[i].name.size = 0;
+    menu->options[i].name.start = NULL;
+    menu->options[i].type = 0;
+    menu->options[i].t.action = NULL;
+    menu->options[i].t.menu = NULL;
   }
 
   int option_index = 0;
@@ -490,7 +512,7 @@ int pnr_parse(int depth, const char *buffer, size_t size,
     int skip = 0;
     for (int i = 0; i < depth; i++) {
       // We're ascending a depth level, ignore the rest of the buffer
-      if (strncmp(current, "- ", 2) != 0) {
+      if ((end - current) < 2 || strncmp(current, "- ", 2) != 0) {
         skip = 1;
         current = end;
         break;
@@ -500,41 +522,54 @@ int pnr_parse(int depth, const char *buffer, size_t size,
     if (current == end)
       break;
     // This line descends a depth, ignore it
-    if (strncmp(current, "- ", 2) == 0) {
+    if ((end - current) >= 2 && strncmp(current, "- ", 2) == 0) {
       skip = 1;
     }
     const char *start = current;
-    while (*current != '\n' && (skip || *current != '$') && current != end)
+    while (current != end && *current != '\n' && (skip || *current != '$'))
       current++;
-    skip = skip || slice_is_blank(start, current); // Skip blank lines
+    // Skip blank lines
+    skip = skip || current == end || slice_is_blank(start, current);
     if (!skip) {
-      menu->options[option_index].name.start = ltrim(start);
+      menu->options[option_index].name.start = ltrim(start, current);
       menu->options[option_index].name.size =
-          (int)(rtrim(current - 1) - start) + 1;
+          (int)(rtrim(current - 1, start) - start) + 1;
       if (*current == '$') {
         // Parse action
         menu->options[option_index].type = PNR_OPTION_TYPE_ACTION;
-        menu->options[option_index].action = malloc(sizeof(struct pnr_action));
-        if (menu->options[option_index].action == NULL) {
+        menu->options[option_index].t.action = malloc(sizeof(struct pnr_action));
+        if (menu->options[option_index].t.action == NULL) {
           rc = RC_ERR_OOM;
           goto _err;
         }
-        const char *command_start = ltrim(current + 1);
-        menu->options[option_index].action->command.start = command_start;
-        while (*current != '\n' && current != end)
+        const char *current_eol = current + 1;
+        while (current_eol != end && *current_eol != '\n') {
+          current_eol++;
+        }
+        const char *command_start = ltrim(current + 1, current_eol);
+        if (command_start >= current_eol) {
+          rc = RC_ERR_PARSE_ERROR_EMPTY_COMMAND;
+          goto _err;
+        }
+        menu->options[option_index].t.action->command.start = command_start;
+        while (current != end && *current != '\n')
           current++;
-        menu->options[option_index].action->command.size =
-            (int)(rtrim(current - 1) - command_start) + 1;
+        menu->options[option_index].t.action->command.size =
+            (int)(rtrim(current - 1, command_start) - command_start) + 1;
       } else {
         // Parse sub menu
         current++;
-        menu->options[option_index].type = PNR_OPTION_TYPE_MENU;
+        if (current == end) {
+          rc = RC_ERR_PARSE_ERROR_EMPTY_MENU;
+          goto _err;
+        }
         rc = pnr_parse(depth + 1, current, (int)(end - current),
-                       &menu->options[option_index].menu);
+                       &menu->options[option_index].t.menu);
         if (rc != RC_OK)
           goto _err;
-        menu->options[option_index].menu->parent = menu;
-        menu->options[option_index].menu->name =
+        menu->options[option_index].type = PNR_OPTION_TYPE_MENU;
+        menu->options[option_index].t.menu->parent = menu;
+        menu->options[option_index].t.menu->name =
             menu->options[option_index].name;
       }
       option_index++;
@@ -563,21 +598,24 @@ void pnr_print(int depth, struct pnr_menu *menu) {
            menu->options[i].name.start);
     if (menu->options[i].type == PNR_OPTION_TYPE_MENU) {
       printf("(MENU)\n");
-      pnr_print(depth + 1, menu->options[i].menu);
+      pnr_print(depth + 1, menu->options[i].t.menu);
     } else {
-      printf("(ACTION): $ \"%.*s\"\n", menu->options[i].action->command.size,
-             menu->options[i].action->command.start);
+      printf("(ACTION): $ \"%.*s\"\n", menu->options[i].t.action->command.size,
+             menu->options[i].t.action->command.start);
     }
   }
 }
 
 void pnr_free(struct pnr_menu *menu) {
-  for (int i = 0; i < menu->options_size; i++) {
-    if (menu->options[i].type == PNR_OPTION_TYPE_ACTION) {
-      free(menu->options[i].action);
-    } else if (menu->options[i].type == PNR_OPTION_TYPE_MENU) {
-      pnr_free(menu->options[i].menu);
+  if (menu->options != NULL) {
+    for (int i = 0; i < menu->options_size; i++) {
+      if (menu->options[i].type == PNR_OPTION_TYPE_ACTION) {
+        free(menu->options[i].t.action);
+      } else if (menu->options[i].type == PNR_OPTION_TYPE_MENU) {
+        pnr_free(menu->options[i].t.menu);
+      }
     }
+    free(menu->options);
   }
   free(menu);
 }
@@ -590,7 +628,7 @@ int slice_is_blank(const char *start, const char *end) {
     }
     current++;
   }
-  return char_is_blank(*end);
+  return 1;
 }
 
 int char_is_blank(char c) {
@@ -614,16 +652,16 @@ char *slice_to_str_alloc(struct slice slice) {
   return str;
 }
 
-const char *ltrim(const char *s) {
+const char *ltrim(const char *s, const char *end) {
   const char *current = s;
-  while (char_is_blank(*current))
+  while (current != end && char_is_blank(*current))
     current++;
   return current;
 }
 
-const char *rtrim(const char *s) {
+const char *rtrim(const char *s, const char *start) {
   const char *current = s;
-  while (char_is_blank(*current))
+  while (current != start && char_is_blank(*current))
     current--;
   return current;
 }
