@@ -1,3 +1,9 @@
+archive. moved to codeberg.
+
+https://codeberg.org/evohunz/picknrun
+
+---
+
 # picknrun
 
 Simple TUI menu picker that run shell commands.
